@@ -1,0 +1,156 @@
+---
+title: "Practical Machine Learning coursework - Predicting the exercise taken"
+author: "Jiameng Yu"
+date: "28/06/2020"
+output: html_document
+---
+
+## Executive Summary
+#### The objective of this project is to construct a model that can predict the manner in which weightlifting exercises are carried out (sitting-down, standing-up, standing, walking and sitting) based on the Weight Lifting Exercise Dataset from a Human Activity Recognition ("HAR") project. Firstly, all derived variables are removed. Due to the distribution of the variables' values, there is no need to standardise them. 
+#### Corelation between different variables were explored but no observable corelation could be identified. 
+#### Then, based on the size of the sample and the number of observed variables 3 models were chosen, namely predicting with trees, boosting with trees and linear discriminant analysis ("lda"). The 3 models were used on all observed variables as well as Euler angles alone. Using all observed variables produces higher accuracy therefore this methodology is adopted. Out of the 3 models, predicting with trees produced disappointing accuracy and was therefore dropped. 
+#### The 3 models were also combined in an effort to achieve better accuracy but the result was the opposite of the objective. Therefore, boosting with trees and lda were used on testing data (using observed variables only). It is estimated that the out of sample error would be around 30% which would reflective of the tendency of overfitting to training data when using boosting with trees. But the mod2 (boosting with trees) did achieve 100% accuranct at prediction so perhaps 30% was an over-estimate. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results="hide", warning=FALSE, message=FALSE}
+##### packages required
+library(dplyr)
+library(ggplot2)
+library(caret)
+```
+#### 
+
+## Exploratory Data Analysis & Pre-procession 
+```{r Exploratory analysis}
+#### The datasets are read in order to carry out some exploratory analysis. 
+setwd("C:/Users/jiameng.yu/Desktop/Statistics_course/Course 8 - Practical Machine Learning/Week 4/Course project")
+WL_training<- read.csv("./pml-training.csv")
+WL_testing<- read.csv("./pml-testing.csv")
+
+#### The dataset contains 160 variables. It has already been split into a training set and a testing set. The training set contains 19622 observations whereas the testing set contains 20. Amongst the 160 variables, 1 ("Classe") is the outcome to be predicted. This then leaves as many as 159 potential predictors which make the dataset a high dimentional one.  
+ncol(WL_training)
+nrow(WL_training)
+nrow(WL_testing)
+head(colnames(WL_training),10)
+
+#### The first 7 columns of the data set appears to be basic information which are removed. 
+WL_training <- WL_training[,-c(1:7)]
+
+####  Further information about the dataset can be found in the paper <Qualitative Activity Recognition of Weight Lifting Exercises>(http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). *"For feature extraction we used a sliding window approach with diﬀerent lengths from 0.5 second to 2.5 seconds, with 0.5 second overlap. In each step of the sliding window approach we calculated features on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings. For the Euler angles of each of the four sensors we calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness, generating in total 96 derived feature sets."* 
+
+#### Accordingly, the dataset variables are to be divided into the following parts WL_Training_ob which contains observed features and WL_Training_derived containing derived feature sets. 
+
+##### Extracting derived features set and observed features set
+features<- colnames(WL_training)
+mean<- grep("avg",features,value=TRUE) ###### 12 variables: 3 euler angles from 4 sensors
+min<- grep("min",features,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+max<- grep("max",features,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+variance<- grep("var",features,value=TRUE)  ###### 16 variables: 3 euler angles from 4 sensors plus 4 features from accelerometer
+sd<-grep("stddev",features,value=TRUE)   ###### 12 variables: 3 euler angles from 4 sensors
+kurtosis<- grep("kurtosis",features,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+skewness<- grep("skewness",features,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+amplitude<- grep("amplitude",features,value=TRUE)###### 12 variables: 3 euler angles from 4 sensors
+
+WL_training_derived <- select(WL_training,c(all_of(mean),all_of(min),all_of(max),all_of(variance),all_of(sd),all_of(kurtosis),all_of(skewness),all_of(amplitude),classe))
+WL_training_ob <- select(WL_training,-c(all_of(mean),all_of(min),all_of(max),all_of(variance),all_of(sd),all_of(kurtosis),all_of(skewness),all_of(amplitude)))
+
+#### The observed dataset is further divided into the euler angle dataset and the raw reading dataset before the corelation between each each sensor is looked into. It is clear that the no obsesrved features require standardisation because the readings are fairly widely distributed.  
+ob_features<- colnames(WL_training_ob)
+roll<- grep("roll",ob_features,value=TRUE)
+pitch<- grep("pitch",ob_features,value=TRUE)
+yaw<- roll<- grep("yaw",ob_features,value=TRUE)
+WLTR_Euler<- select(WL_training_ob,c(all_of(roll),all_of(pitch),all_of(yaw),classe))
+WLTR_Raw<- select(WL_training_ob,-c(all_of(roll),all_of(pitch),all_of(yaw)))
+summary(WLTR_Euler)
+summary(WLTR_Raw)
+
+#### Moreover, based on the featurePlot below, one can see that there is no observable corelation between readings from different sensors. The feature plots are done on Euler angle readings. It is assumed that the same conclusion can be made for the raw readings as they are essentially different techniques to derive the same information. 
+featurePlot(x=WLTR_Euler[,c("pitch_belt","pitch_arm","pitch_dumbbell")],y=WLTR_Euler$pitch_forearm,plot="pairs")
+```
+
+## Training models 
+```{r Training models}
+#### Firstly, using roll_belt - roll_forearm and yaw_arm - yaw_dumbbell as examples, no clear pattern can be found regarding their predictive values. 
+qplot(pitch_belt,pitch_forearm,colour=classe,data=WLTR_Euler)
+qplot(yaw_arm,yaw_dumbbell,colour=classe,data=WLTR_Euler)
+```
+
+```{r, results="hide"}
+#### Given the large number of variables, a variety of models were used to try to predict the position in which the exercises were taken. Specifically, predicting with trees (mod1), boosting with trees (mod2) and linear discriminant analysis(mod3) were first applied on all observed variables.These 3 model were chosen because of the size of the sample as well as the number of variables available. Moreover, due to the nature of the predictor and response variables some models (like random foreast and generalised linear regression) are simply not suitable. 
+
+####Predicting with trees (mod1) produce rather poor results based on all measures. Boosting with trees were able to produce much better accuracy though this model is also most at risk of overfitting to the training data. LDA (mod3) were able to produce reasonably satistfactory accuracy. 
+WL_mod1<- train(classe ~ ., data=WL_training_ob,method="rpart")
+WL_mod2<- train(classe ~ ., data=WL_training_ob,method="gbm")
+WL_mod3<- train(classe ~ ., data=WL_training_ob,method="lda")
+``` 
+
+#### The accuracy of the 3 models are analysed in turn. 
+``` {r}
+WL_mod1 #### predicting with tree
+WL_mod2 #### boosting with tree
+WL_mod3 #### lda
+```
+
+#### The same 3 models are then applied to the Euler Angle readings only to see whether the raw readings are merely adding "noise" rather than increase accuracy. As it happens, all 3 models produces less accurate results when used on Euler Angles only. Therefore, this project will continue with taking into account all observed variables. 
+```{r, results="hide"}
+WL_mod4<- train(classe ~ ., data=WLTR_Euler,method="rpart")
+WL_mod5<- train(classe ~ ., data=WLTR_Euler,method="gbm")
+WL_mod6<- train(classe ~ ., data=WLTR_Euler,method="lda")
+```
+
+```{r}
+WL_mod4 # rpart
+WL_mod5 # gbm
+WL_mod6 # lda
+```
+
+
+## Combining predictors
+``` {r Combining predictors}
+#### In an effort to maximise accuracy, the 3 models above are combined into one model.But as it happens, the combined model has far less accuracy than the better fitted models used individually. 
+WL_pred1<- predict(WL_mod1,WL_training_ob)
+WL_pred2<- predict(WL_mod2,WL_training_ob)
+WL_pred3<- predict(WL_mod3,WL_training_ob)
+WL_predDF1<- data.frame(WL_pred1,WL_pred2,WL_pred3,classe=WL_training_ob$classe)
+```
+
+```{r, results="hide", warning=FALSE, message=FALSE}
+WL_combModFit1<- train(classe ~ ., method="gam",data=WL_predDF1)
+WL_combModFit1
+```
+
+```{r, results="hide", warning=FALSE, message=FALSE}
+#### Therefore, the least accurate model (mod1 - predicting with trees) is removed from the the combination. The result show that even this combination is reducing accuracy from using mod2 (boowting with tree) and mod3(linear discriminant analysis). Therefore, models 2 and 3 will be used separately on testing data. 
+WL_predDF2<- data.frame(WL_pred2,WL_pred3,classe=WL_training_ob$classe)
+WL_combModFit2<- train(classe ~ ., method="gam",data=WL_predDF2)
+WL_combModFit2
+```
+
+
+#### Applying the models to predict
+```{r Applying the models}
+####Firstly, the test data is also to undergo appropriate pre-processing by removing derived observations. 
+features_test<- colnames(WL_testing)
+meanT<- grep("avg",features_test,value=TRUE) ###### 12 variables: 3 euler angles from 4 sensors
+minT<- grep("min",features_test,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+maxT<- grep("max",features_test,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+varianceT<- grep("var",features_test,value=TRUE)  ###### 16 variables: 3 euler angles from 4 sensors plus 4 features from accelerometer
+sdT<-grep("stddev",features_test,value=TRUE)   ###### 12 variables: 3 euler angles from 4 sensors
+kurtosisT<- grep("kurtosis",features_test,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+skewnessT<- grep("skewness",features_test,value=TRUE)  ###### 12 variables: 3 euler angles from 4 sensors
+amplitudeT<- grep("amplitude",features_test,value=TRUE)###### 12 variables: 3 euler angles from 4 sensors
+
+WL_test_ob <- select(WL_testing,-c(all_of(meanT),all_of(minT),all_of(maxT),all_of(varianceT),all_of(sdT),all_of(kurtosisT),all_of(skewnessT),all_of(amplitudeT)))
+
+#### Then models 2(boosting with tree) and model 3 (linear discriminant analysis) built on all observed variables are used to perform the prediction. Given the difference in the two models' prediction, it is estimated that the out of sample error would be approximately 30% which is similar to the difference in accuracy of the two models. 
+FinalPred2<- predict(WL_mod2,WL_test_ob)
+FinalPred3<- predict(WL_mod3,WL_test_ob)
+table(FinalPred2,FinalPred3)
+
+#### Based on the higher accuracy, mod2 (boosting with trees) is chosen to make the final predictions. Which were as follows:
+data.frame(problem_id=WL_testing$problem_id,FinalPred2)
+```
+
